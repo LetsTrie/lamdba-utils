@@ -6,19 +6,19 @@ import {
 } from "@aws-sdk/client-s3";
 
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { sendErrorResponse } from "./utils.mjs";
+
+let Upload;
+let archiver;
+let PassThrough;
 
 class S3Service {
   constructor() {
     this.s3Client = new S3Client({});
   }
 
-  sendErrorResponse(code, message) {
-    return {
-      statusCode: code,
-      body: JSON.stringify({
-        message: message,
-      }),
-    };
+  getClient() {
+    return this.s3Client;
   }
 
   async getS3Object(
@@ -40,7 +40,7 @@ class S3Service {
       return response.Body;
     } catch (error) {
       console.error("Error getting S3 object: ", error);
-      throw error;
+      return null;
     }
   }
 
@@ -61,12 +61,9 @@ class S3Service {
       await this.s3Client.send(new HeadObjectCommand({ Bucket, Key }));
       return true;
     } catch (error) {
-      if (
-        error.name === "NotFound" ||
-        error.$metadata?.httpStatusCode === 404
-      ) {
-        return false;
-      }
+      if (error.name === "NotFound") return false;
+      if (error.$metadata?.httpStatusCode === 404) return false;
+
       console.error("Error checking if file exists in S3: ", error);
       throw error;
     }
@@ -76,10 +73,9 @@ class S3Service {
     try {
       const params = { Bucket, Key };
 
-      // Check if the object exists
       const isFileExists = await this.checkIfFileExists(Bucket, Key);
       if (!isFileExists) {
-        return this.sendErrorResponse(
+        return sendErrorResponse(
           404,
           "The specified key does not exist in the bucket."
         );
@@ -91,7 +87,6 @@ class S3Service {
         ] = `inline; filename="${encodeURIComponent(downloadFilename)}"`;
       }
 
-      // Generate pre-signed URL
       const command = new GetObjectCommand(params);
       const presignedUrl = await getSignedUrl(this.s3Client, command, {
         expiresIn,
@@ -103,7 +98,7 @@ class S3Service {
       };
     } catch (error) {
       console.error("Error generating get presigned URL:", error);
-      return this.sendErrorResponse(500, error.message);
+      return sendErrorResponse(500, error.message);
     }
   }
 
@@ -122,7 +117,50 @@ class S3Service {
       };
     } catch (error) {
       console.error("Error generating put presigned URL:", error);
-      return this.sendErrorResponse(500, error.message);
+      return sendErrorResponse(500, error.message);
+    }
+  }
+
+  async getWritableStreamFromS3(Bucket, Key) {
+    const streamLib = await import("stream");
+    const awsSdkLibStorage = await import("@aws-sdk/lib-storage");
+
+    PassThrough = streamLib.PassThrough;
+    Upload = awsSdkLibStorage.Upload;
+
+    let passThroughStream = new PassThrough();
+    const params = {
+      Bucket,
+      Key,
+      Body: passThroughStream,
+    };
+    const uploadOperation = new Upload({
+      client: this.s3Client,
+      params,
+    }).done();
+    return { uploadOperation, passThroughStream };
+  }
+
+  async generateAndStreamZipfileToS3(bucket, zipFileKey, sourceKey) {
+    try {
+      archiver = await import("archiver");
+
+      const zipArchive = archiver("zip", { zlib: { level: 9 } });
+
+      const s3SourceStream = await this.getS3Object(bucket, sourceKey, {
+        transformResponse: false,
+      });
+      zipArchive.append(s3SourceStream, { name: sourceKey });
+
+      const { uploadOperation, passThroughStream } =
+        await this.getWritableStreamFromS3(bucket, zipFileKey);
+
+      zipArchive.pipe(passThroughStream);
+      zipArchive.finalize();
+
+      await uploadOperation;
+    } catch (error) {
+      console.error(`Error in generateAndStreamZipfileToS3: ${error.message}`);
     }
   }
 }
