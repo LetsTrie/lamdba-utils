@@ -5,12 +5,21 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { sendErrorResponse } from "./utils.mjs";
+import { Upload } from "@aws-sdk/lib-storage";
 
-let Upload;
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
 let archiver;
 let PassThrough;
+
+const sendErrorResponse = (code, message) => {
+  return {
+    statusCode: code,
+    body: JSON.stringify({
+      message: message,
+    }),
+  };
+};
 
 class S3Service {
   constructor() {
@@ -88,13 +97,13 @@ class S3Service {
       }
 
       const command = new GetObjectCommand(params);
-      const presignedUrl = await getSignedUrl(this.s3Client, command, {
+      const preSignedUrl = await getSignedUrl(this.s3Client, command, {
         expiresIn,
       });
 
       return {
         statusCode: 200,
-        body: JSON.stringify({ presignedUrl }),
+        body: JSON.stringify({ preSignedUrl }),
       };
     } catch (error) {
       console.error("Error generating get presigned URL:", error);
@@ -107,13 +116,13 @@ class S3Service {
       const params = { Bucket, Key };
 
       const command = new PutObjectCommand(params);
-      const presignedUrl = await getSignedUrl(this.s3Client, command, {
+      const preSignedUrl = await getSignedUrl(this.s3Client, command, {
         expiresIn,
       });
 
       return {
         statusCode: 200,
-        body: JSON.stringify({ presignedUrl }),
+        body: JSON.stringify({ preSignedUrl }),
       };
     } catch (error) {
       console.error("Error generating put presigned URL:", error);
@@ -123,10 +132,7 @@ class S3Service {
 
   async getWritableStreamFromS3(Bucket, Key) {
     const streamLib = await import("stream");
-    const awsSdkLibStorage = await import("@aws-sdk/lib-storage");
-
     PassThrough = streamLib.PassThrough;
-    Upload = awsSdkLibStorage.Upload;
 
     let passThroughStream = new PassThrough();
     const params = {
