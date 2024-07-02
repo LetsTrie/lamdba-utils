@@ -6,7 +6,6 @@ import {
 } from "@aws-sdk/client-s3";
 
 import { Upload } from "@aws-sdk/lib-storage";
-
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 let archiver;
@@ -22,8 +21,11 @@ const sendErrorResponse = (code, message) => {
 };
 
 class S3Service {
-  constructor() {
-    this.s3Client = new S3Client({});
+  /**
+   * @param {Object} config - S3 client configuration options.
+   */
+  constructor(config = {}) {
+    this.s3Client = new S3Client(config);
   }
 
   getClient() {
@@ -55,10 +57,8 @@ class S3Service {
 
   async putS3Object(Bucket, Key, Body) {
     try {
-      const params = { Bucket, Key, Body };
-      const command = new PutObjectCommand(params);
-      const response = await this.s3Client.send(command);
-      return response;
+      const command = new PutObjectCommand({ Bucket, Key, Body });
+      return await this.s3Client.send(command);
     } catch (error) {
       console.error("Error putting S3 object: ", error);
       throw error;
@@ -80,8 +80,6 @@ class S3Service {
 
   async generateGetPresignedUrl(Bucket, Key, expiresIn, downloadFilename) {
     try {
-      const params = { Bucket, Key };
-
       const isFileExists = await this.checkIfFileExists(Bucket, Key);
       if (!isFileExists) {
         return sendErrorResponse(
@@ -90,6 +88,7 @@ class S3Service {
         );
       }
 
+      const params = { Bucket, Key };
       if (downloadFilename) {
         params[
           "ResponseContentDisposition"
@@ -113,9 +112,7 @@ class S3Service {
 
   async generatePutPresignedUrl(Bucket, Key, expiresIn) {
     try {
-      const params = { Bucket, Key };
-
-      const command = new PutObjectCommand(params);
+      const command = new PutObjectCommand({ Bucket, Key });
       const preSignedUrl = await getSignedUrl(this.s3Client, command, {
         expiresIn,
       });
@@ -135,14 +132,13 @@ class S3Service {
     PassThrough = streamLib.PassThrough;
 
     let passThroughStream = new PassThrough();
-    const params = {
-      Bucket,
-      Key,
-      Body: passThroughStream,
-    };
     const uploadOperation = new Upload({
       client: this.s3Client,
-      params,
+      params: {
+        Bucket,
+        Key,
+        Body: passThroughStream,
+      },
     }).done();
     return { uploadOperation, passThroughStream };
   }
@@ -162,7 +158,7 @@ class S3Service {
         await this.getWritableStreamFromS3(bucket, zipFileKey);
 
       zipArchive.pipe(passThroughStream);
-      zipArchive.finalize();
+      await zipArchive.finalize();
 
       await uploadOperation;
     } catch (error) {
