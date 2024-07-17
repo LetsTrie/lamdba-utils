@@ -5,11 +5,14 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 
-import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { Upload } from "@aws-sdk/lib-storage";
 
-let archiver;
-let PassThrough;
+import archiver from "archiver";
+import { PassThrough } from "stream";
+
+// let archiver;
+// let PassThrough;
 
 const sendErrorResponse = (code, message) => {
   return {
@@ -21,13 +24,11 @@ const sendErrorResponse = (code, message) => {
 };
 
 class S3Service {
-  /**
-   * @param {Object} config - S3 client configuration options.
-   */
+
   constructor(config = {}) {
     this.s3Client = new S3Client(config);
   }
-
+  
   getClient() {
     return this.s3Client;
   }
@@ -35,7 +36,7 @@ class S3Service {
   async getS3Object(
     Bucket,
     Key,
-    options = { transformResponse: true, transformFn: null }
+    options = { transformResponse: true, transformFn: null },
   ) {
     try {
       const params = { Bucket, Key };
@@ -50,7 +51,7 @@ class S3Service {
       }
       return response.Body;
     } catch (error) {
-      console.error("Error getting S3 object: ", error);
+      console.error("Error getting S3 object: ", error.message);
       return null;
     }
   }
@@ -60,7 +61,7 @@ class S3Service {
       const command = new PutObjectCommand({ Bucket, Key, Body });
       return await this.s3Client.send(command);
     } catch (error) {
-      console.error("Error putting S3 object: ", error);
+      console.error("Error putting S3 object: ", error.message);
       throw error;
     }
   }
@@ -84,7 +85,7 @@ class S3Service {
       if (!isFileExists) {
         return sendErrorResponse(
           404,
-          "The specified key does not exist in the bucket."
+          "The specified key does not exist in the bucket.",
         );
       }
 
@@ -126,11 +127,22 @@ class S3Service {
       return sendErrorResponse(500, error.message);
     }
   }
-
+  
+  async uploadStream(Bucket, Key, Body) {
+    try {
+      const upload = new Upload({
+          client: this.s3Client,
+          params: { Bucket, Key, Body, }
+      });
+  
+      await upload.done();
+    } catch (error) {
+      console.error("Error uploading stream: ", error.message);
+      throw error;
+    }
+  }
+  
   async getWritableStreamFromS3(Bucket, Key) {
-    const streamLib = await import("stream");
-    PassThrough = streamLib.PassThrough;
-
     let passThroughStream = new PassThrough();
     const uploadOperation = new Upload({
       client: this.s3Client,
@@ -142,28 +154,23 @@ class S3Service {
     }).done();
     return { uploadOperation, passThroughStream };
   }
-
+  
   async generateAndStreamZipfileToS3(bucket, zipFileKey, sourceKey) {
-    try {
-      archiver = await import("archiver");
+      try {
+        const zipArchive = archiver('zip', { zlib: { level: 9 } });
 
-      const zipArchive = archiver("zip", { zlib: { level: 9 } });
+        const s3SourceStream = await this.getS3Object(bucket, sourceKey, { transformResponse: false });
+        zipArchive.append(s3SourceStream, { name: sourceKey });
 
-      const s3SourceStream = await this.getS3Object(bucket, sourceKey, {
-        transformResponse: false,
-      });
-      zipArchive.append(s3SourceStream, { name: sourceKey });
+        const { uploadOperation, passThroughStream } = await this.getWritableStreamFromS3(bucket, zipFileKey);
 
-      const { uploadOperation, passThroughStream } =
-        await this.getWritableStreamFromS3(bucket, zipFileKey);
-
-      zipArchive.pipe(passThroughStream);
-      await zipArchive.finalize();
-
-      await uploadOperation;
-    } catch (error) {
-      console.error(`Error in generateAndStreamZipfileToS3: ${error.message}`);
-    }
+        zipArchive.pipe(passThroughStream);
+        await zipArchive.finalize();
+        
+        await uploadOperation;
+      } catch (error) {
+          console.error(`Error in generateAndStreamZipfileToS3: ${error.message}`);
+      }
   }
 }
 
